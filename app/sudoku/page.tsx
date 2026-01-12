@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Trophy,
@@ -10,19 +10,35 @@ import {
   Eraser,
   Pencil,
   Lightbulb,
-  PlusCircle,
   AlertCircle,
-  CheckCircle2,
   ChevronLeft,
+  Pause,
 } from "lucide-react";
+import Link from "next/link";
 import SudokuGrid from "@/components/Sudoku/sudoku-grid";
-import {
-  getSudokuPuzzle,
-  SudokuGrid as APIGrid,
-} from "@/lib/actions/sudoku-actions";
+import PauseModal from "@/components/Sudoku/pause-modal";
+import SettingsModal, {
+  GameSettings,
+  defaultSettings,
+} from "@/components/Sudoku/settings-modal";
+import { getSudokuPuzzle } from "@/lib/actions/sudoku-actions";
 import { isBoardCorrect, formatTime } from "@/lib/sudoku-utils";
 import { cn } from "@/lib/utils";
-import Link from "next/link";
+import { toast } from "sonner";
+
+const STORAGE_KEY = "sudoku_game_state";
+const SETTINGS_KEY = "sudoku_settings";
+
+interface GameState {
+  board: (number | null)[][];
+  initialBoard: (number | null)[][];
+  solution: number[][];
+  difficulty: string;
+  notes: number[][][]; // Serialized Set<number>
+  timer: number;
+  mistakes: number;
+  status: "playing" | "won" | "lost";
+}
 
 const SudokuPage = () => {
   // Game State
@@ -54,19 +70,95 @@ const SudokuPage = () => {
   );
   const [isNoteMode, setIsNoteMode] = useState(false);
   const [timer, setTimer] = useState(0);
-  const [isActive, setIsActive] = useState(false);
+  const [hasStarted, setHasStarted] = useState(false); // Timer starts on first input
+  const [isPaused, setIsPaused] = useState(false);
   const [mistakes, setMistakes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<"playing" | "won" | "lost">("playing");
   const [history, setHistory] = useState<(number | null)[][][]>([]);
+  const [hintsLimit, setHintsLimit] = useState(3);
+
+  // Modal State
+  const [showPauseModal, setShowPauseModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  // Settings
+  const [settings, setSettings] = useState<GameSettings>(defaultSettings);
+
+  // Load settings from localStorage
+  useEffect(() => {
+    const savedSettings = localStorage.getItem(SETTINGS_KEY);
+    if (savedSettings) {
+      try {
+        setSettings(JSON.parse(savedSettings));
+      } catch {}
+    }
+  }, []);
+
+  // Save settings to localStorage
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }, [settings]);
+
+  // Load game state from localStorage
+  useEffect(() => {
+    const savedGame = localStorage.getItem(STORAGE_KEY);
+    if (savedGame) {
+      try {
+        const state: GameState = JSON.parse(savedGame);
+        if (state.status === "playing") {
+          setBoard(state.board);
+          setInitialBoard(state.initialBoard);
+          setSolution(state.solution);
+          setDifficulty(state.difficulty);
+          setNotes(state.notes.map((row) => row.map((cell) => new Set(cell))));
+          setTimer(state.timer);
+          setMistakes(state.mistakes);
+          setStatus(state.status);
+          setHasStarted(state.timer > 0);
+          setLoading(false);
+          return;
+        }
+      } catch {}
+    }
+    fetchNewGame();
+  }, []);
+
+  // Save game state to localStorage
+  useEffect(() => {
+    if (loading || status !== "playing") return;
+    const state: GameState = {
+      board,
+      initialBoard,
+      solution,
+      difficulty,
+      notes: notes.map((row) => row.map((cell) => Array.from(cell))),
+      timer,
+      mistakes,
+      status,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [
+    board,
+    initialBoard,
+    solution,
+    difficulty,
+    notes,
+    timer,
+    mistakes,
+    status,
+    loading,
+  ]);
 
   const fetchNewGame = useCallback(async () => {
     setLoading(true);
     setStatus("playing");
     setMistakes(0);
     setTimer(0);
+    setHasStarted(false);
     setHistory([]);
     setSelectedCell(null);
+    localStorage.removeItem(STORAGE_KEY);
 
     const puzzle = await getSudokuPuzzle();
     if (puzzle) {
@@ -87,38 +179,45 @@ const SudokuPage = () => {
               .map(() => new Set())
           )
       );
-      setIsActive(true);
     }
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    fetchNewGame();
-  }, [fetchNewGame]);
-
+  // Timer logic - only runs when started and not paused
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isActive && status === "playing") {
+    if (hasStarted && !isPaused && status === "playing") {
       interval = setInterval(() => {
         setTimer((prev) => prev + 1);
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isActive, status]);
+  }, [hasStarted, isPaused, status]);
+
+  // Pause when modal opens
+  useEffect(() => {
+    if (showPauseModal) {
+      setIsPaused(true);
+    }
+  }, [showPauseModal]);
 
   const handleCellValueChange = useCallback(
     (r: number, c: number, value: number | null) => {
       if (status !== "playing" || initialBoard[r][c] !== null) return;
 
+      // Start timer on first input
+      if (!hasStarted && value !== null) {
+        setHasStarted(true);
+      }
+
       if (isNoteMode && value !== null) {
-        const newNotes = [...notes];
-        const cellNotes = new Set(newNotes[r][c]);
+        const newNotes = notes.map((row) => row.map((cell) => new Set(cell)));
+        const cellNotes = newNotes[r][c];
         if (cellNotes.has(value)) {
           cellNotes.delete(value);
         } else {
           cellNotes.add(value);
         }
-        newNotes[r][c] = cellNotes;
         setNotes(newNotes);
         return;
       }
@@ -131,6 +230,25 @@ const SudokuPage = () => {
 
       setBoard(newBoard);
 
+      // Auto-remove notes when filling a cell
+      if (value !== null && settings.autoRemoveNotes) {
+        const newNotes = notes.map((row) => row.map((cell) => new Set(cell)));
+        newNotes[r][c].clear();
+        // Remove this value from notes in same row, column, and box
+        for (let i = 0; i < 9; i++) {
+          newNotes[r][i].delete(value);
+          newNotes[i][c].delete(value);
+        }
+        const boxR = Math.floor(r / 3) * 3;
+        const boxC = Math.floor(c / 3) * 3;
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            newNotes[boxR + i][boxC + j].delete(value);
+          }
+        }
+        setNotes(newNotes);
+      }
+
       if (value !== null && value !== solution[r][c]) {
         setMistakes((prev) => {
           const next = prev + 1;
@@ -141,10 +259,19 @@ const SudokuPage = () => {
 
       if (isBoardCorrect(newBoard, solution)) {
         setStatus("won");
-        setIsActive(false);
+        localStorage.removeItem(STORAGE_KEY);
       }
     },
-    [board, initialBoard, isNoteMode, notes, solution, status]
+    [
+      board,
+      initialBoard,
+      isNoteMode,
+      notes,
+      solution,
+      status,
+      hasStarted,
+      settings.autoRemoveNotes,
+    ]
   );
 
   const handleUndo = () => {
@@ -155,14 +282,32 @@ const SudokuPage = () => {
   };
 
   const handleHint = () => {
+    if (hintsLimit === 0) {
+      toast.warning("No Hints Left", {
+        description: "You have used all your hints.",
+      });
+      return;
+    }
     if (!selectedCell || status !== "playing") return;
     const [r, c] = selectedCell;
     if (board[r][c] !== null) return;
+    if (!hasStarted) setHasStarted(true);
     handleCellValueChange(r, c, solution[r][c]);
+    setHintsLimit((prev) => prev - 1);
+  };
+
+  const handlePauseResume = () => {
+    setShowPauseModal(false);
+    setIsPaused(false);
+  };
+
+  const handleQuit = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    window.location.href = "/";
   };
 
   const NumberPad = () => (
-    <div className="grid grid-cols-3 gap-2 mt-8 max-w-[300px] mx-auto">
+    <div className="grid grid-cols-9 md:grid-cols-3 gap-2 md:gap-4 mx-auto w-full">
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
         <motion.button
           key={num}
@@ -172,7 +317,7 @@ const SudokuPage = () => {
             selectedCell &&
             handleCellValueChange(selectedCell[0], selectedCell[1], num)
           }
-          className="size-12 md:size-14 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xl font-bold transition-colors flex items-center justify-center backdrop-blur-sm"
+          className="w-full aspect-square rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl md:text-3xl font-bold transition-colors flex items-center justify-center backdrop-blur-sm"
         >
           {num}
         </motion.button>
@@ -181,79 +326,41 @@ const SudokuPage = () => {
   );
 
   return (
-    <main className="min-h-screen bg-[#0a0a0a] text-white flex flex-col items-center justify-center p-4 selection:bg-blue-500/30">
+    <main className="min-h-screen w-full bg-[#0a0a0a] text-white p-4 selection:bg-blue-500/30">
       {/* Background Decor */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
       </div>
 
-      <div className="relative z-10 w-full max-w-4xl flex flex-col items-center">
+      <div className="relative z-10 w-full max-w-6xl h-[calc(100vh-8rem)] mx-auto space-y-6">
         {/* Header */}
-        <header className="w-full flex justify-between items-center mb-8 px-4">
+        <header className="w-full flex items-center justify-between">
           <Link
             href="/"
             className="group flex items-center gap-2 text-white/60 hover:text-white transition-colors"
           >
             <ChevronLeft className="size-5 group-hover:-translate-x-1 transition-transform" />
-            <span className="font-medium">Dashboard</span>
+            <span className="font-medium group-hover:flex hidden">
+              Dashboard
+            </span>
           </Link>
-          <div className="flex items-center gap-4">
-            <h1 className="text-3xl font-black bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-purple-400 tracking-tighter">
-              SUDOKU
-            </h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <button className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors">
-              <Settings2 className="size-5" />
-            </button>
-          </div>
+          <h1 className="text-3xl font-black bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-purple-400">
+            SUDOKU
+          </h1>
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors"
+          >
+            <Settings2 className="size-5" />
+          </button>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 w-full">
-          {/* Left Column: Stats & Board */}
-          <div className="lg:col-span-12 flex flex-col items-center">
-            {/* Game Stats */}
-            <div className="flex items-center gap-8 mb-6 p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl w-full max-w-[500px] justify-around">
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] uppercase font-bold text-white/40 mb-1">
-                  Difficulty
-                </span>
-                <span className="text-blue-400 font-bold">{difficulty}</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] uppercase font-bold text-white/40 mb-1">
-                  Mistakes
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={cn(
-                      "font-bold transition-colors",
-                      mistakes > 0 ? "text-red-400" : "text-white"
-                    )}
-                  >
-                    {mistakes}/3
-                  </span>
-                  {mistakes >= 1 && (
-                    <AlertCircle className="size-4 text-red-400 animate-pulse" />
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] uppercase font-bold text-white/40 mb-1">
-                  Time
-                </span>
-                <div className="flex items-center gap-2">
-                  <TimerIcon className="size-4 text-blue-400" />
-                  <span className="font-mono font-bold">
-                    {formatTime(timer)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
+        <div className="mt-8 w-full h-full flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
+          {/* Grid Column */}
+          <div className="flex flex-col items-center w-full md:w-[60%]">
             {loading ? (
-              <div className="size-[320px] sm:size-[400px] md:size-[500px] flex items-center justify-center bg-white/5 rounded-2xl border border-white/10">
+              <div className="w-full aspect-square max-w-[320px] sm:max-w-[400px] md:max-w-[500px] flex items-center justify-center bg-white/5 rounded-2xl border border-white/10 mx-auto">
                 <div className="flex flex-col items-center gap-4">
                   <div className="size-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
                   <p className="text-white/60 font-medium italic">
@@ -262,7 +369,7 @@ const SudokuPage = () => {
                 </div>
               </div>
             ) : (
-              <div className="relative group">
+              <div className="relative group w-full">
                 <SudokuGrid
                   board={board}
                   initialBoard={initialBoard}
@@ -270,9 +377,10 @@ const SudokuPage = () => {
                   selectedCell={selectedCell}
                   onCellSelect={(r, c) => setSelectedCell([r, c])}
                   onCellValueChange={handleCellValueChange}
+                  settings={settings}
                 />
 
-                {/* Overlays */}
+                {/* Victory / Game Over Overlay */}
                 <AnimatePresence>
                   {status !== "playing" && (
                     <motion.div
@@ -289,8 +397,8 @@ const SudokuPage = () => {
                             VICTORY!
                           </h2>
                           <p className="text-white/60 mb-8 max-w-[200px]">
-                            You've completed the challenge in{" "}
-                            {formatTime(timer)} with {mistakes} mistakes.
+                            Completed in {formatTime(timer)} with {mistakes}{" "}
+                            mistakes.
                           </p>
                         </>
                       ) : (
@@ -318,16 +426,69 @@ const SudokuPage = () => {
                 </AnimatePresence>
               </div>
             )}
+          </div>
 
-            {/* Controls Bar */}
-            <div className="mt-8 grid grid-cols-4 gap-4 w-full max-w-[500px]">
+          {/* Controls Column */}
+          <div className="w-full md:w-[40%] flex flex-col gap-4 md:gap-6">
+            {/* Game Stats */}
+            <div className="hidden md:flex items-center justify-between gap-4 p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl w-full">
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+                  Difficulty
+                </span>
+                <span className="text-blue-400 font-bold text-xs lg:text-base">
+                  {difficulty}
+                </span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+                  Mistakes
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "font-bold transition-colors text-xs lg:text-base",
+                      mistakes > 0 ? "text-red-400" : "text-white"
+                    )}
+                  >
+                    {mistakes}/3
+                  </span>
+                  {mistakes >= 1 && (
+                    <AlertCircle className="size-4 text-red-400 animate-pulse" />
+                  )}
+                </div>
+              </div>
+              {settings.showTimer && (
+                <div className="flex flex-col items-center">
+                  <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+                    Time
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <TimerIcon className="size-4 text-blue-400" />
+                    <span className="font-mono text-xs lg:text-base font-bold">
+                      {formatTime(timer)}
+                    </span>
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={() => setShowPauseModal(true)}
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                title="Pause"
+              >
+                <Pause className="size-5" />
+              </button>
+            </div>
+
+            {/* Controls */}
+            <div className="flex items-center justify-around w-full gap-2">
               <ControlButton
-                icon={<RotateCcw />}
+                icon={<RotateCcw className="size-4 md:size-6" />}
                 label="Undo"
                 onClick={handleUndo}
               />
               <ControlButton
-                icon={<Eraser />}
+                icon={<Eraser className="size-4 md:size-6" />}
                 label="Erase"
                 onClick={() =>
                   selectedCell &&
@@ -335,13 +496,13 @@ const SudokuPage = () => {
                 }
               />
               <ControlButton
-                icon={<Pencil />}
+                icon={<Pencil className="size-4 md:size-6" />}
                 label="Notes"
                 active={isNoteMode}
                 onClick={() => setIsNoteMode(!isNoteMode)}
               />
               <ControlButton
-                icon={<Lightbulb />}
+                icon={<Lightbulb className="size-4 md:size-6" />}
                 label="Hint"
                 onClick={handleHint}
               />
@@ -351,6 +512,27 @@ const SudokuPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Modals */}
+      <PauseModal
+        isOpen={showPauseModal}
+        onClose={handlePauseResume}
+        onNewGame={() => {
+          setShowPauseModal(false);
+          fetchNewGame();
+        }}
+        onQuit={handleQuit}
+        timer={timer}
+        mistakes={mistakes}
+        difficulty={difficulty}
+      />
+
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        settings={settings}
+        onSettingsChange={setSettings}
+      />
     </main>
   );
 };
@@ -367,9 +549,10 @@ const ControlButton = ({
   active?: boolean;
 }) => (
   <button
+    title={label}
     onClick={onClick}
     className={cn(
-      "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all duration-200 group text-white/60 hover:text-white",
+      "flex-1 py-2 md:py-4 flex items-center justify-center rounded-xl border transition-all duration-200 group text-white/60 hover:text-white",
       active
         ? "bg-blue-600 border-blue-400/50 shadow-lg text-white"
         : "bg-white/5 border-white/10 hover:bg-white/10"
@@ -377,15 +560,12 @@ const ControlButton = ({
   >
     <div
       className={cn(
-        "size-6 transition-transform group-hover:scale-110",
+        "transition-transform group-hover:scale-110",
         active && "scale-110 text-white"
       )}
     >
       {icon}
     </div>
-    <span className="text-[10px] uppercase font-bold tracking-widest">
-      {label}
-    </span>
   </button>
 );
 
