@@ -21,13 +21,55 @@ import SettingsModal, {
   GameSettings,
   defaultSettings,
 } from "@/components/Sudoku/settings-modal";
-import { getSudokuPuzzle } from "@/lib/actions/sudoku-actions";
+import {
+  getSudokuPuzzle,
+  SudokuGrid as SudokuPuzzle,
+} from "@/lib/actions/sudoku-actions";
 import { isBoardCorrect, formatTime } from "@/lib/sudoku-utils";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { Toaster } from "sonner";
 
 const STORAGE_KEY = "sudoku_game_state";
 const SETTINGS_KEY = "sudoku_settings";
+const SAVED_PUZZLES_KEY = "savedSudokuRounds";
+
+// Helper functions for cache management
+const getSavedPuzzles = (): SudokuPuzzle[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const saved = localStorage.getItem(SAVED_PUZZLES_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+};
+
+const savePuzzles = (puzzles: SudokuPuzzle[]) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(SAVED_PUZZLES_KEY, JSON.stringify(puzzles));
+  } catch (error) {
+    console.error("Failed to save puzzles to localStorage:", error);
+  }
+};
+
+const replenishCache = async (targetCount: number) => {
+  const currentCache = getSavedPuzzles();
+  const needed = targetCount - currentCache.length;
+
+  if (needed <= 0) return;
+
+  try {
+    const result = await getSudokuPuzzle(needed);
+    if (result) {
+      const newPuzzles = Array.isArray(result) ? result : [result];
+      savePuzzles([...currentCache, ...newPuzzles]);
+    }
+  } catch (error) {
+    console.error("Failed to replenish cache:", error);
+  }
+};
 
 interface GameState {
   board: (number | null)[][];
@@ -38,6 +80,7 @@ interface GameState {
   timer: number;
   mistakes: number;
   status: "playing" | "won" | "lost";
+  hintsUsed: number;
 }
 
 const SudokuPage = () => {
@@ -100,6 +143,20 @@ const SudokuPage = () => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
+  // Adjust cache size when localSaveCount setting changes
+  useEffect(() => {
+    const currentCache = getSavedPuzzles();
+    const targetCount = settings.localSaveCount;
+
+    if (currentCache.length > targetCount) {
+      // Trim excess puzzles
+      savePuzzles(currentCache.slice(0, targetCount));
+    } else if (currentCache.length < targetCount) {
+      // Replenish to target count
+      replenishCache(targetCount);
+    }
+  }, [settings.localSaveCount]);
+
   // Load game state from localStorage
   useEffect(() => {
     const savedGame = localStorage.getItem(STORAGE_KEY);
@@ -116,6 +173,7 @@ const SudokuPage = () => {
           setMistakes(state.mistakes);
           setStatus(state.status);
           setHasStarted(state.timer > 0);
+          setHintsLimit(state.hintsUsed);
           setLoading(false);
           return;
         }
@@ -136,6 +194,7 @@ const SudokuPage = () => {
       timer,
       mistakes,
       status,
+      hintsUsed: hintsLimit,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [
@@ -147,6 +206,7 @@ const SudokuPage = () => {
     timer,
     mistakes,
     status,
+    hintsLimit,
     loading,
   ]);
 
@@ -160,13 +220,43 @@ const SudokuPage = () => {
     setSelectedCell(null);
     localStorage.removeItem(STORAGE_KEY);
 
-    const puzzle = await getSudokuPuzzle();
+    // Try to use cached puzzle first
+    const cachedPuzzles = getSavedPuzzles();
+    let puzzle: SudokuPuzzle | null = null;
+
+    if (cachedPuzzles.length > 0) {
+      // Use first cached puzzle
+      puzzle = cachedPuzzles[0];
+      // Remove it from cache
+      const remainingPuzzles = cachedPuzzles.slice(1);
+      savePuzzles(remainingPuzzles);
+      // Show toast notification
+      toast.info("Playing saved round", {
+        description: `${remainingPuzzles.length} puzzles remaining in cache`,
+      });
+      // Replenish cache in background
+      replenishCache(settings.localSaveCount);
+    } else {
+      toast.info("Fetching new puzzle", {
+        description: "Please wait while we fetch a new puzzle",
+      });
+      // No cached puzzles, fetch from API
+      const result = await getSudokuPuzzle();
+      puzzle = Array.isArray(result) ? result[0] : result;
+      // Start building cache in background
+      replenishCache(settings.localSaveCount);
+    }
+
     if (puzzle) {
       setInitialBoard(
-        puzzle.value.map((row) => row.map((cell) => (cell === 0 ? null : cell)))
+        puzzle.value.map((row: number[]) =>
+          row.map((cell: number) => (cell === 0 ? null : cell))
+        )
       );
       setBoard(
-        puzzle.value.map((row) => row.map((cell) => (cell === 0 ? null : cell)))
+        puzzle.value.map((row: number[]) =>
+          row.map((cell: number) => (cell === 0 ? null : cell))
+        )
       );
       setSolution(puzzle.solution);
       setDifficulty(puzzle.difficulty);
@@ -181,7 +271,7 @@ const SudokuPage = () => {
       );
     }
     setLoading(false);
-  }, []);
+  }, [settings.localSaveCount]);
 
   // Timer logic - only runs when started and not paused
   useEffect(() => {
@@ -292,8 +382,11 @@ const SudokuPage = () => {
     const [r, c] = selectedCell;
     if (board[r][c] !== null) return;
     if (!hasStarted) setHasStarted(true);
-    handleCellValueChange(r, c, solution[r][c]);
     setHintsLimit((prev) => prev - 1);
+    handleCellValueChange(r, c, solution[r][c]);
+    toast.info("Hint Used", {
+      description: `You have ${hintsLimit} hints left.`,
+    });
   };
 
   const handlePauseResume = () => {
@@ -325,215 +418,234 @@ const SudokuPage = () => {
     </div>
   );
 
-  return (
-    <main className="min-h-screen w-full bg-[#0a0a0a] text-white p-4 selection:bg-blue-500/30">
-      {/* Background Decor */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
-      </div>
-
-      <div className="relative z-10 w-full max-w-6xl h-[calc(100vh-8rem)] mx-auto space-y-6">
-        {/* Header */}
-        <header className="w-full flex items-center justify-between">
-          <Link
-            href="/"
-            className="group flex items-center gap-2 text-white/60 hover:text-white transition-colors"
-          >
-            <ChevronLeft className="size-5 group-hover:-translate-x-1 transition-transform" />
-            <span className="font-medium group-hover:flex hidden">
-              Dashboard
+  const GameStats = ({ device }: { device: "mobile" | "desktop" }) => {
+    const deviceType =
+      device === "mobile" ? "flex md:hidden" : "hidden lg:flex";
+    return (
+      <div
+        className={`${deviceType} items-center justify-between gap-4 p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl w-full`}
+      >
+        <div className="flex flex-col items-center">
+          <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+            Difficulty
+          </span>
+          <span className="text-blue-400 font-bold text-xs lg:text-base">
+            {difficulty}
+          </span>
+        </div>
+        <div className="flex flex-col items-center">
+          <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+            Mistakes
+          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "font-bold transition-colors text-xs lg:text-base",
+                mistakes > 0 ? "text-red-400" : "text-white"
+              )}
+            >
+              {mistakes}/3
             </span>
-          </Link>
-          <h1 className="text-3xl font-black bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-purple-400">
-            SUDOKU
-          </h1>
-          <button
-            onClick={() => setShowSettingsModal(true)}
-            className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors"
-          >
-            <Settings2 className="size-5" />
-          </button>
-        </header>
-
-        <div className="mt-8 w-full h-full flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
-          {/* Grid Column */}
-          <div className="flex flex-col items-center w-full md:w-[60%]">
-            {loading ? (
-              <div className="w-full aspect-square max-w-[320px] sm:max-w-[400px] md:max-w-[500px] flex items-center justify-center bg-white/5 rounded-2xl border border-white/10 mx-auto">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="size-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
-                  <p className="text-white/60 font-medium italic">
-                    Generating Puzzle...
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="relative group w-full">
-                <SudokuGrid
-                  board={board}
-                  initialBoard={initialBoard}
-                  notes={notes}
-                  selectedCell={selectedCell}
-                  onCellSelect={(r, c) => setSelectedCell([r, c])}
-                  onCellValueChange={handleCellValueChange}
-                  settings={settings}
-                />
-
-                {/* Victory / Game Over Overlay */}
-                <AnimatePresence>
-                  {status !== "playing" && (
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="absolute inset-0 z-50 rounded-2xl bg-black/80 backdrop-blur-md flex flex-col items-center justify-center text-center p-8 border border-white/20"
-                    >
-                      {status === "won" ? (
-                        <>
-                          <div className="size-20 bg-green-500/20 rounded-full flex items-center justify-center mb-6">
-                            <Trophy className="size-10 text-green-500" />
-                          </div>
-                          <h2 className="text-4xl font-black mb-2 tracking-tight">
-                            VICTORY!
-                          </h2>
-                          <p className="text-white/60 mb-8 max-w-[200px]">
-                            Completed in {formatTime(timer)} with {mistakes}{" "}
-                            mistakes.
-                          </p>
-                        </>
-                      ) : (
-                        <>
-                          <div className="size-20 bg-red-500/20 rounded-full flex items-center justify-center mb-6">
-                            <AlertCircle className="size-10 text-red-500" />
-                          </div>
-                          <h2 className="text-4xl font-black mb-2 tracking-tight">
-                            GAME OVER
-                          </h2>
-                          <p className="text-white/60 mb-8 max-w-[200px]">
-                            Maximum mistakes reached. Better luck next time!
-                          </p>
-                        </>
-                      )}
-                      <button
-                        onClick={fetchNewGame}
-                        className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all hover:shadow-[0_0_20px_rgba(37,99,235,0.4)]"
-                      >
-                        <RotateCcw className="size-5" />
-                        New Game
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+            {mistakes >= 1 && (
+              <AlertCircle className="size-4 text-red-400 animate-pulse" />
             )}
           </div>
+        </div>
+        {settings.showTimer && (
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
+              Time
+            </span>
+            <div className="flex items-center gap-2">
+              <TimerIcon className="size-4 text-blue-400" />
+              <span className="font-mono text-xs lg:text-base font-bold">
+                {formatTime(timer)}
+              </span>
+            </div>
+          </div>
+        )}
+        <button
+          onClick={() => setShowPauseModal(true)}
+          className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+          title="Pause"
+        >
+          <Pause className="size-5" />
+        </button>
+      </div>
+    );
+  };
 
-          {/* Controls Column */}
-          <div className="w-full md:w-[40%] flex flex-col gap-4 md:gap-6">
-            {/* Game Stats */}
-            <div className="hidden md:flex items-center justify-between gap-4 p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl w-full">
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
-                  Difficulty
-                </span>
-                <span className="text-blue-400 font-bold text-xs lg:text-base">
-                  {difficulty}
-                </span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
-                  Mistakes
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={cn(
-                      "font-bold transition-colors text-xs lg:text-base",
-                      mistakes > 0 ? "text-red-400" : "text-white"
-                    )}
-                  >
-                    {mistakes}/3
-                  </span>
-                  {mistakes >= 1 && (
-                    <AlertCircle className="size-4 text-red-400 animate-pulse" />
-                  )}
-                </div>
-              </div>
-              {settings.showTimer && (
-                <div className="flex flex-col items-center">
-                  <span className="text-[9px] lg:text-xs uppercase font-bold text-white/40 mb-1">
-                    Time
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <TimerIcon className="size-4 text-blue-400" />
-                    <span className="font-mono text-xs lg:text-base font-bold">
-                      {formatTime(timer)}
-                    </span>
+  return (
+    <>
+      <Toaster position="top-right" richColors />
+      <main className="min-h-screen w-full bg-[#0a0a0a] text-white p-4 selection:bg-blue-500/30">
+        {/* Background Decor */}
+        <div className="fixed inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
+          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
+        </div>
+
+        <div className="relative z-10 w-full max-w-6xl mx-auto space-y-6">
+          {/* Header */}
+          <header className="w-full flex items-center justify-between">
+            <Link
+              href="/"
+              className="group flex items-center gap-2 text-white/60 hover:text-white transition-colors"
+            >
+              <ChevronLeft className="size-5 group-hover:-translate-x-1 transition-transform" />
+              <span className="font-medium group-hover:flex hidden">
+                Dashboard
+              </span>
+            </Link>
+            <h1 className="text-3xl font-black bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-purple-400">
+              SUDOKU
+            </h1>
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              <Settings2 className="size-5" />
+            </button>
+          </header>
+
+          <GameStats device="mobile" />
+
+          <div className="md:mt-8 w-full h-[calc(100vh-10rem)] flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
+            {/* Grid Column */}
+            <div className="flex flex-col items-center w-full md:w-[60%]">
+              {loading ? (
+                <div className="w-full aspect-square max-w-[320px] sm:max-w-[400px] md:max-w-[500px] flex items-center justify-center bg-white/5 rounded-2xl border border-white/10 mx-auto">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="size-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                    <p className="text-white/60 font-medium italic">
+                      Generating Puzzle...
+                    </p>
                   </div>
                 </div>
+              ) : (
+                <div className="relative group w-full">
+                  <SudokuGrid
+                    board={board}
+                    initialBoard={initialBoard}
+                    notes={notes}
+                    selectedCell={selectedCell}
+                    onCellSelect={(r, c) => setSelectedCell([r, c])}
+                    onCellValueChange={handleCellValueChange}
+                    settings={settings}
+                  />
+
+                  {/* Victory / Game Over Overlay */}
+                  <AnimatePresence>
+                    {status !== "playing" && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="absolute inset-0 z-50 rounded-2xl bg-black/80 backdrop-blur-md flex flex-col items-center justify-center text-center p-8 border border-white/20"
+                      >
+                        {status === "won" ? (
+                          <>
+                            <div className="size-20 bg-green-500/20 rounded-full flex items-center justify-center mb-6">
+                              <Trophy className="size-10 text-green-500" />
+                            </div>
+                            <h2 className="text-4xl font-black mb-2 tracking-tight">
+                              VICTORY!
+                            </h2>
+                            <p className="text-white/60 mb-8 max-w-[200px]">
+                              Completed in {formatTime(timer)} with {mistakes}{" "}
+                              mistakes.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="size-20 bg-red-500/20 rounded-full flex items-center justify-center mb-6">
+                              <AlertCircle className="size-10 text-red-500" />
+                            </div>
+                            <h2 className="text-4xl font-black mb-2 tracking-tight">
+                              GAME OVER
+                            </h2>
+                            <p className="text-white/60 mb-8 max-w-[200px]">
+                              Maximum mistakes reached. Better luck next time!
+                            </p>
+                          </>
+                        )}
+                        <button
+                          onClick={fetchNewGame}
+                          className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all hover:shadow-[0_0_20px_rgba(37,99,235,0.4)]"
+                        >
+                          <RotateCcw className="size-5" />
+                          New Game
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
-              <button
-                onClick={() => setShowPauseModal(true)}
-                className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
-                title="Pause"
-              >
-                <Pause className="size-5" />
-              </button>
             </div>
 
-            {/* Controls */}
-            <div className="flex items-center justify-around w-full gap-2">
-              <ControlButton
-                icon={<RotateCcw className="size-4 md:size-6" />}
-                label="Undo"
-                onClick={handleUndo}
-              />
-              <ControlButton
-                icon={<Eraser className="size-4 md:size-6" />}
-                label="Erase"
-                onClick={() =>
-                  selectedCell &&
-                  handleCellValueChange(selectedCell[0], selectedCell[1], null)
-                }
-              />
-              <ControlButton
-                icon={<Pencil className="size-4 md:size-6" />}
-                label="Notes"
-                active={isNoteMode}
-                onClick={() => setIsNoteMode(!isNoteMode)}
-              />
-              <ControlButton
-                icon={<Lightbulb className="size-4 md:size-6" />}
-                label="Hint"
-                onClick={handleHint}
-              />
-            </div>
+            {/* Controls Column */}
+            <div className="w-full md:w-[40%] flex flex-col gap-4 md:gap-6">
+              {/* Game Stats */}
+              <GameStats device="desktop" />
 
-            <NumberPad />
+              {/* Controls */}
+              <div className="flex items-center justify-around w-full gap-2">
+                <ControlButton
+                  icon={<RotateCcw className="size-4 md:size-6" />}
+                  label="Undo"
+                  onClick={handleUndo}
+                />
+                <ControlButton
+                  icon={<Eraser className="size-4 md:size-6" />}
+                  label="Erase"
+                  onClick={() =>
+                    selectedCell &&
+                    handleCellValueChange(
+                      selectedCell[0],
+                      selectedCell[1],
+                      null
+                    )
+                  }
+                />
+                <ControlButton
+                  icon={<Pencil className="size-4 md:size-6" />}
+                  label="Notes"
+                  active={isNoteMode}
+                  onClick={() => setIsNoteMode(!isNoteMode)}
+                />
+                <ControlButton
+                  icon={<Lightbulb className="size-4 md:size-6" />}
+                  label="Hint"
+                  onClick={handleHint}
+                />
+              </div>
+
+              <NumberPad />
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Modals */}
-      <PauseModal
-        isOpen={showPauseModal}
-        onClose={handlePauseResume}
-        onNewGame={() => {
-          setShowPauseModal(false);
-          fetchNewGame();
-        }}
-        onQuit={handleQuit}
-        timer={timer}
-        mistakes={mistakes}
-        difficulty={difficulty}
-      />
+        {/* Modals */}
+        <PauseModal
+          isOpen={showPauseModal}
+          onClose={handlePauseResume}
+          onNewGame={() => {
+            setShowPauseModal(false);
+            fetchNewGame();
+          }}
+          onQuit={handleQuit}
+          timer={timer}
+          mistakes={mistakes}
+          difficulty={difficulty}
+        />
 
-      <SettingsModal
-        isOpen={showSettingsModal}
-        onClose={() => setShowSettingsModal(false)}
-        settings={settings}
-        onSettingsChange={setSettings}
-      />
-    </main>
+        <SettingsModal
+          isOpen={showSettingsModal}
+          onClose={() => setShowSettingsModal(false)}
+          settings={settings}
+          onSettingsChange={setSettings}
+        />
+      </main>
+    </>
   );
 };
 

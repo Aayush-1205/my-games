@@ -1,7 +1,5 @@
 "use server";
 
-export type Difficulty = "easy" | "medium" | "hard" | "random";
-
 export interface SudokuGrid {
     value: number[][];
     solution: number[][];
@@ -17,11 +15,11 @@ export interface SudokuResponse {
 }
 
 export async function getSudokuPuzzle(
-    difficulty: Difficulty = "random"
-): Promise<SudokuGrid | null> {
+    limit: number = 1
+): Promise<SudokuGrid | SudokuGrid[] | null> {
     try {
         const response = await fetch(
-            `https://sudoku-api.vercel.app/api/dosuku?query={newboard(limit:1){grids{value,solution,${difficulty}},results,message}}`,
+            `https://sudoku-api.vercel.app/api/dosuku?query={newboard(limit:${limit}){grids{value,solution,difficulty},results,message}}`,
             {
                 cache: "no-store",
             }
@@ -34,10 +32,11 @@ export async function getSudokuPuzzle(
         const data: SudokuResponse = await response.json();
 
         if (data.newboard.results > 0) {
-            const puzzle = data.newboard.grids[0];
-            // If specific difficulty requested, keep fetching until we get it
-            // For now, return what we get (API doesn't support difficulty filter directly)
-            return puzzle;
+            // Return array if limit > 1, otherwise return single puzzle
+            if (limit > 1) {
+                return data.newboard.grids;
+            }
+            return data.newboard.grids[0];
         }
 
         return null;

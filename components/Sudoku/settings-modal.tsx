@@ -11,6 +11,8 @@ import {
   Timer,
   Eraser,
   Hash,
+  X,
+  Save,
 } from "lucide-react";
 import {
   Dialog,
@@ -30,6 +32,7 @@ export interface GameSettings {
   autoRemoveNotes: boolean;
   highlightMatchingNumbers: boolean;
   showTimer: boolean;
+  localSaveCount: number;
 }
 
 export const defaultSettings: GameSettings = {
@@ -39,6 +42,7 @@ export const defaultSettings: GameSettings = {
   autoRemoveNotes: true,
   highlightMatchingNumbers: true,
   showTimer: true,
+  localSaveCount: 2,
 };
 
 const HIGHLIGHT_COLORS = [
@@ -81,7 +85,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent
-        showCloseButton={true}
+        showCloseButton={false}
         className="bg-[#0a0a0a]/95 backdrop-blur-xl border-white/10 text-white max-w-md p-0 overflow-hidden"
       >
         {/* Neon glow effect */}
@@ -92,11 +96,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
         <div className="relative z-10 p-6">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-3 text-xl font-bold">
-              <div className="size-10 rounded-xl bg-purple-500/20 border border-purple-500/30 flex items-center justify-center">
-                <Settings className="size-5 text-purple-400" />
+            <DialogTitle className="flex items-center justify-between gap-3 text-xl font-bold">
+              <div className="flex items-center gap-3 text-xl font-bold">
+                <div className="size-10 rounded-xl bg-purple-500/20 border border-purple-500/30 flex items-center justify-center">
+                  <Settings className="size-5 text-purple-400" />
+                </div>
+                Settings
               </div>
-              Settings
+
+              <button
+                onClick={onClose}
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                title="Close"
+              >
+                <X className="size-5" />
+              </button>
             </DialogTitle>
           </DialogHeader>
 
@@ -214,6 +228,38 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 checked={settings.showTimer}
                 onCheckedChange={(v) => updateSetting("showTimer", v)}
               />
+            </motion.div>
+
+            {/* Local Save Count */}
+            <motion.div
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.3 }}
+              className="space-y-3"
+            >
+              <div className="flex items-center gap-2">
+                <Save className="size-4 text-green-400" />
+                <Label className="text-sm font-medium text-white">
+                  Local Save
+                </Label>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-xs text-white/40 w-8">2</span>
+                <Slider
+                  value={[settings.localSaveCount]}
+                  onValueChange={(v) => updateSetting("localSaveCount", v[0])}
+                  min={2}
+                  max={10}
+                  step={1}
+                  className="flex-1"
+                />
+                <span className="text-xs text-white/40 w-8 text-right">10</span>
+              </div>
+              <div className="flex justify-center">
+                <span className="text-sm font-bold text-green-400">
+                  {settings.localSaveCount} puzzles cached
+                </span>
+              </div>
             </motion.div>
           </div>
         </div>
