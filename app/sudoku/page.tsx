@@ -400,7 +400,7 @@ const SudokuPage = () => {
   };
 
   const NumberPad = () => (
-    <div className="grid grid-cols-9 md:grid-cols-3 gap-2 md:gap-4 mx-auto w-full">
+    <div className="flex items-center flex-wrap justify-center md:grid md:grid-cols-3 gap-2 md:gap-4 md:mx-auto w-full">
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
         <motion.button
           key={num}
@@ -410,7 +410,7 @@ const SudokuPage = () => {
             selectedCell &&
             handleCellValueChange(selectedCell[0], selectedCell[1], num)
           }
-          className="w-full aspect-square rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl md:text-3xl font-bold transition-colors flex items-center justify-center backdrop-blur-sm"
+          className="size-16 md:w-full md:aspect-square! rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-2xl md:text-3xl font-bold transition-colors flex items-center justify-center backdrop-blur-sm"
         >
           {num}
         </motion.button>
@@ -485,7 +485,7 @@ const SudokuPage = () => {
           <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
         </div>
 
-        <div className="relative z-10 w-full max-w-6xl mx-auto space-y-6">
+        <div className="relative z-10 w-full max-w-6xl h-full mx-auto space-y-6">
           {/* Header */}
           <header className="w-full flex items-center justify-between">
             <Link
@@ -510,7 +510,7 @@ const SudokuPage = () => {
 
           <GameStats device="mobile" />
 
-          <div className="md:mt-8 w-full h-[calc(100vh-10rem)] flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
+          <div className="md:mt-8 w-full sm:h-[calc(100vh-10rem)] flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
             {/* Grid Column */}
             <div className="flex flex-col items-center w-full md:w-[60%]">
               {loading ? (

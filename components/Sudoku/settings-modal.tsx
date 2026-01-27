@@ -289,7 +289,11 @@ const SettingToggle = ({
         <p className="text-xs text-white/40">{description}</p>
       </div>
     </div>
-    <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    <Switch
+      className="data-[state=checked]:bg-purple-500"
+      checked={checked}
+      onCheckedChange={onCheckedChange}
+    />
   </div>
 );
 
